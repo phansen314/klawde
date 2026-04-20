@@ -16,6 +16,26 @@ from textual.widgets import DataTable, Footer, Header
 _TAIL_BYTES = 16 * 1024
 _STALE_SECONDS = 30 * 60
 
+def _context_window(model: str | None) -> int:
+    if not model:
+        return 200_000
+    if "[1m]" in model.lower():
+        return 1_000_000
+    if "opus-4-7" in model:
+        return 1_000_000
+    return 200_000
+
+
+def _context_percent(tokens: int, window: int) -> int:
+    if window <= 0:
+        return 0
+    pct = round(tokens * 100 / window)
+    if pct < 0:
+        return 0
+    if pct > 100:
+        return 100
+    return pct
+
 
 @dataclass
 class Session:
@@ -24,6 +44,9 @@ class Session:
     kitty_window_id: int | None
     started_at: datetime
     source: str | None = None
+    model: str | None = None
+    context_tokens: int | None = None
+    context_percent: int | None = None
 
 
 def _events_path() -> Path:
@@ -42,6 +65,74 @@ def _transcript_path(cwd: str, session_id: str) -> Path | None:
         return None
     p = Path.home() / ".claude" / "projects" / munged / f"{session_id}.jsonl"
     return p if p.exists() else None
+
+
+@dataclass
+class TranscriptMeta:
+    model: str | None
+    context_tokens: int
+
+
+def _read_transcript_meta(path: Path) -> TranscriptMeta | None:
+    """Tail the transcript and return the main-chain entry with the most recent
+    timestamp. Returns model + context_tokens (input + cache_read + cache_creation).
+
+    Filters out: entries without `message.usage`, sidechain entries
+    (`isSidechain == true`), API-error entries (`isApiErrorMessage == true`),
+    and entries missing a `timestamp`. Schema is verified implicitly —
+    non-Claude-Code files produce None.
+    """
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            f.seek(max(0, size - _TAIL_BYTES))
+            chunk = f.read()
+    except OSError:
+        return None
+    if size > _TAIL_BYTES:
+        nl = chunk.find(b"\n")
+        if nl == -1:
+            return None
+        chunk = chunk[nl + 1:]
+
+    best_ts: str | None = None
+    best_model: str | None = None
+    best_ctx: int | None = None
+    for raw in chunk.splitlines():
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("isSidechain"):
+            continue
+        if obj.get("isApiErrorMessage"):
+            continue
+        ts = obj.get("timestamp")
+        if not ts:
+            continue
+        msg = obj.get("message") or {}
+        usage = msg.get("usage") or {}
+        if not usage:
+            continue
+        try:
+            ctx = (
+                int(usage.get("input_tokens", 0))
+                + int(usage.get("cache_read_input_tokens", 0))
+                + int(usage.get("cache_creation_input_tokens", 0))
+            )
+        except (TypeError, ValueError):
+            continue
+        if best_ts is None or ts > best_ts:
+            best_ts = ts
+            best_model = msg.get("model") if isinstance(msg.get("model"), str) else None
+            best_ctx = ctx
+
+    if best_ctx is None:
+        return None
+    return TranscriptMeta(model=best_model, context_tokens=best_ctx)
 
 
 def _parse_ts(s: str) -> datetime:
@@ -87,14 +178,30 @@ class SessionApp(App):
         self.title = "klawde"
         self.sub_title = "Enter: focus Kitty pane  ·  q: quit"
         table = self.query_one(DataTable)
-        table.add_columns("Session", "CWD", "Duration", "Kitty")
+        table.add_columns("Session", "CWD", "Duration", "Kitty", "Ctx")
         self._tick()
         self.set_interval(1.0, self._tick)
 
     def _tick(self) -> None:
         self._read_new_events()
         self._prune_stale()
+        self._refresh_metas()
         self._render_table()
+
+    def _refresh_metas(self) -> None:
+        for sid, s in self.sessions.items():
+            tp = _transcript_path(s.cwd, sid)
+            if tp is None:
+                s.model = None
+                s.context_tokens = None
+                s.context_percent = None
+                continue
+            meta = _read_transcript_meta(tp)
+            if meta is None:
+                continue
+            s.model = meta.model
+            s.context_tokens = meta.context_tokens
+            s.context_percent = _context_percent(meta.context_tokens, _context_window(meta.model))
 
     def _prune_stale(self) -> None:
         now = time.time()
@@ -207,11 +314,13 @@ class SessionApp(App):
         table.clear()
         for sid, s in sorted(self.sessions.items(), key=lambda kv: kv[1].started_at):
             kitty = str(s.kitty_window_id) if s.kitty_window_id is not None else "—"
+            ctx = f"{s.context_percent}%" if s.context_percent is not None else "—"
             table.add_row(
                 sid[:8],
                 Path(s.cwd).name or s.cwd or "—",
                 _fmt_duration(s.started_at),
                 kitty,
+                ctx,
                 key=sid,
             )
 
