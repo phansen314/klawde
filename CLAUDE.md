@@ -65,6 +65,19 @@ uv run python -m pytest         # tests (see note below on why `-m pytest`)
 uv run python -m pytest tests/test_dup.py::test_duplicate_start_preserves_started_at   # single test
 ```
 
+## Table columns
+
+Column order: `● | Prompt | Ctx | CWD | Duration | Model | Session | Kitty`
+
+- **●** — status icon: green ● running, yellow ⏸ needs_approval
+- **Prompt** — first 30 chars of the first real user message in the transcript (skips slash commands, tool results, sidechain, meta entries). See `_read_first_prompt`.
+- **Ctx** — context window usage bar + %. Color: green <70%, yellow 70–84%, red ≥85% with ⚠. See `_ctx_bar`.
+- **CWD** — working directory, home-collapsed (`~/...`), left-ellipsis truncated to 30 chars. See `_fmt_cwd`.
+- **Duration** — time since session started.
+- **Model** — model name with `claude-` prefix and date suffix stripped.
+- **Session** — first 8 chars of session UUID.
+- **Kitty** — kitty window ID.
+
 ## Key files
 
 - `src/klawde/tui.py` — entire TUI, event-tailing logic, focus action, self-registration in `main()`.
