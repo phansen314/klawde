@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "klawde"
+version = "0.1.0"
+description = "Simple Textual TUI"
+requires-python = ">=3.12"
+dependencies = [
+    "textual>=0.50.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+    "pytest-asyncio>=1.0",
+    "pytest-xdist>=3.0",
+    "ruff>=0.9",
+    "mypy>=1.0",
+]
+
+[project.scripts]
+klawde = "klawde.__main__:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]
+asyncio_mode = "auto"
+addopts = "-n auto --cov-report=term-missing --cov-report=html:coverage/html"
+
+[tool.coverage.run]
+source_pkgs = ["klawde"]
+branch = true
+parallel = true
+data_file = "coverage/.coverage"
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+
+[tool.coverage.html]
+directory = "coverage/html"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "W"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["klawde"]
+
+[tool.ruff.lint.per-file-ignores]
+"*/__init__.py" = ["F401"]
+"tests/*" = ["F841"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+disable_error_code = ["no-any-return"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/klawde"]

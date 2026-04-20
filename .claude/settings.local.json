@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(stx workspace *)",
+      "Bash(stx task *)",
+      "Bash(uv run *)",
+      "Bash(uv sync *)",
+      "Bash(/home/superuser/code/klawde/.venv/bin/python -c \"from klawde.tui import SessionApp, _fmt_duration, _parse_ts; print\\('import ok'\\)\")"
+    ]
+  }
+}
