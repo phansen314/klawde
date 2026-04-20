@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import subprocess
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header
+
+_TAIL_BYTES = 16 * 1024
+_STALE_SECONDS = 30 * 60
 
 
 @dataclass
@@ -18,6 +23,7 @@ class Session:
     cwd: str
     kitty_window_id: int | None
     started_at: datetime
+    source: str | None = None
 
 
 def _events_path() -> Path:
@@ -25,6 +31,17 @@ def _events_path() -> Path:
     if env:
         return Path(env)
     return Path.home() / ".claude" / "session-events.jsonl"
+
+
+def _transcript_path(cwd: str, session_id: str) -> Path | None:
+    if not cwd or not session_id:
+        return None
+    normalized = cwd.rstrip("/") or "/"
+    munged = normalized.replace("/", "-")
+    if not munged:
+        return None
+    p = Path.home() / ".claude" / "projects" / munged / f"{session_id}.jsonl"
+    return p if p.exists() else None
 
 
 def _parse_ts(s: str) -> datetime:
@@ -76,7 +93,27 @@ class SessionApp(App):
 
     def _tick(self) -> None:
         self._read_new_events()
+        self._prune_stale()
         self._render_table()
+
+    def _prune_stale(self) -> None:
+        now = time.time()
+        stale: list[str] = []
+        for sid, s in self.sessions.items():
+            age = now - s.started_at.timestamp()
+            if age < _STALE_SECONDS:
+                continue
+            tp = _transcript_path(s.cwd, sid)
+            if tp is not None:
+                try:
+                    mtime = tp.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                if now - mtime < _STALE_SECONDS:
+                    continue
+            stale.append(sid)
+        for sid in stale:
+            self.sessions.pop(sid, None)
 
     def _read_new_events(self) -> None:
         try:
@@ -99,8 +136,8 @@ class SessionApp(App):
 
         if reset:
             self.sessions.clear()
-            self._file_offset = 0
             self._file_inode = st.st_ino
+            self._file_offset = max(0, st.st_size - _TAIL_BYTES)
 
         self._file_size = st.st_size
 
@@ -113,6 +150,13 @@ class SessionApp(App):
                 chunk = f.read()
         except OSError:
             return
+
+        if reset and self._file_offset > 0:
+            first_nl = chunk.find(b"\n")
+            if first_nl == -1:
+                return
+            chunk = chunk[first_nl + 1:]
+            self._file_offset += first_nl + 1
 
         last_nl = chunk.rfind(b"\n")
         if last_nl == -1:
@@ -140,11 +184,13 @@ class SessionApp(App):
                 started = _parse_ts(obj["timestamp"])
             except (KeyError, ValueError):
                 started = datetime.now(UTC)
+            existing = self.sessions.get(sid)
             self.sessions[sid] = Session(
                 session_id=sid,
                 cwd=obj.get("cwd", ""),
                 kitty_window_id=obj.get("kitty_window_id"),
-                started_at=started,
+                started_at=existing.started_at if existing else started,
+                source=obj.get("source"),
             )
         elif event == "stop":
             self.sessions.pop(sid, None)
@@ -193,21 +239,39 @@ class SessionApp(App):
                 severity="error",
             )
             return
+        self._focus_kitty_window(listen_on, session.kitty_window_id)
+
+    @work(exclusive=True, group="focus-kitty")
+    async def _focus_kitty_window(self, listen_on: str, window_id: int) -> None:
         cmd = [
             "kitten", "@", "--to", listen_on,
-            "focus-window", "--match", f"id:{session.kitty_window_id}",
+            "focus-window", "--match", f"id:{window_id}",
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
         except FileNotFoundError:
             self.notify("kitten not found on PATH", severity="error")
             return
-        except subprocess.TimeoutExpired:
-            self.notify("kitten timed out", severity="error")
-            return
-        if result.returncode != 0:
-            msg = (result.stderr or result.stdout or "kitten failed").strip()
-            self.notify(msg[:200], severity="error")
+        try:
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=3)
+            except TimeoutError:
+                self.notify("kitten timed out", severity="error")
+                return
+            if proc.returncode != 0:
+                msg = (stderr.decode(errors="replace") or stdout.decode(errors="replace") or "kitten failed").strip()
+                self.notify(msg[:200], severity="error")
+        finally:
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
 
 
 def _state_file() -> Path:

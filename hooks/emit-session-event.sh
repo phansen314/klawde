@@ -11,9 +11,10 @@ if [[ -z "$session_id" ]]; then
 fi
 if [[ "$event" == "start" ]]; then
   cwd=$(jq -r '.cwd // empty' <<<"$input")
+  source=$(jq -r '.source // empty' <<<"$input")
   kwid="${KITTY_WINDOW_ID:-}"
-  jq -cn --arg e start --arg s "$session_id" --arg c "$cwd" --arg t "$ts" --arg k "$kwid" \
-    '{event:$e, session_id:$s, cwd:$c, kitty_window_id:(if $k=="" then null else ($k|tonumber) end), timestamp:$t}' \
+  jq -cn --arg e start --arg s "$session_id" --arg c "$cwd" --arg t "$ts" --arg k "$kwid" --arg src "$source" \
+    '{event:$e, session_id:$s, cwd:$c, kitty_window_id:(if $k=="" then null else ($k|tonumber) end), source:(if $src=="" then null else $src end), timestamp:$t}' \
     >> "$events_file"
 elif [[ "$event" == "stop" ]]; then
   jq -cn --arg e stop --arg s "$session_id" --arg t "$ts" \
