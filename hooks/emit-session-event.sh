@@ -20,5 +20,17 @@ elif [[ "$event" == "stop" ]]; then
   jq -cn --arg e stop --arg s "$session_id" --arg t "$ts" \
     '{event:$e, session_id:$s, timestamp:$t}' \
     >> "$events_file"
+elif [[ "$event" == "needs_approval" ]]; then
+  notif_type=$(jq -r '.notification_type // ""' <<<"$input")
+  message=$(jq -r '.message // ""' <<<"$input")
+  if [[ "$notif_type" == "permission_prompt" ]] || echo "$message" | grep -qi "permission"; then
+    jq -cn --arg e needs_approval --arg s "$session_id" --arg t "$ts" \
+      '{event:$e, session_id:$s, timestamp:$t}' \
+      >> "$events_file"
+  fi
+elif [[ "$event" == "working" ]]; then
+  jq -cn --arg e working --arg s "$session_id" --arg t "$ts" \
+    '{event:$e, session_id:$s, timestamp:$t}' \
+    >> "$events_file"
 fi
 exit 0

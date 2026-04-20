@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -37,6 +39,26 @@ def _context_percent(tokens: int, window: int) -> int:
     return pct
 
 
+_BAR_WIDTH = 10
+
+
+def _ctx_bar(pct: int) -> Text:
+    filled = round(pct * _BAR_WIDTH / 100)
+    if filled < 0:
+        filled = 0
+    elif filled > _BAR_WIDTH:
+        filled = _BAR_WIDTH
+    bar = "█" * filled + " " * (_BAR_WIDTH - filled)
+    if pct < 70:
+        color = "green"
+    elif pct < 85:
+        color = "yellow"
+    else:
+        color = "red"
+    suffix = " ⚠" if pct >= 85 else ""
+    return Text(f"{bar} {pct}%{suffix}", style=color)
+
+
 @dataclass
 class Session:
     session_id: str
@@ -47,6 +69,8 @@ class Session:
     model: str | None = None
     context_tokens: int | None = None
     context_percent: int | None = None
+    status: str = "running"
+    prompt: str | None = None
 
 
 def _events_path() -> Path:
@@ -65,6 +89,12 @@ def _transcript_path(cwd: str, session_id: str) -> Path | None:
         return None
     p = Path.home() / ".claude" / "projects" / munged / f"{session_id}.jsonl"
     return p if p.exists() else None
+
+
+def _status_icon(status: str) -> Text:
+    if status == "needs_approval":
+        return Text("⏸", style="yellow")
+    return Text("●", style="green")
 
 
 @dataclass
@@ -135,6 +165,36 @@ def _read_transcript_meta(path: Path) -> TranscriptMeta | None:
     return TranscriptMeta(model=best_model, context_tokens=best_ctx)
 
 
+def _read_first_prompt(path: Path) -> str | None:
+    try:
+        with path.open("rb") as f:
+            chunk = f.read(8192)
+    except OSError:
+        return None
+    for raw in chunk.splitlines():
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("type") != "user":
+            continue
+        if obj.get("isSidechain") or obj.get("isMeta") or obj.get("toolUseResult"):
+            continue
+        content = (obj.get("message") or {}).get("content", "")
+        if isinstance(content, list):
+            text = next((b.get("text", "") for b in content if b.get("type") == "text"), "")
+        else:
+            text = content if isinstance(content, str) else ""
+        text = text.strip()
+        if not text or text.startswith("<command-name>"):
+            continue
+        return text[:30]
+    return None
+
+
 def _parse_ts(s: str) -> datetime:
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
@@ -151,6 +211,24 @@ def _fmt_duration(started: datetime) -> str:
         return f"{mins}m"
     hours, mins = divmod(mins, 60)
     return f"{hours}h{mins}m"
+
+
+def _fmt_cwd(cwd: str, width: int = 30) -> str:
+    if not cwd:
+        return "—".ljust(width)
+    p = Path(cwd)
+    try:
+        collapsed = "~/" + str(p.relative_to(Path.home()))
+    except ValueError:
+        collapsed = str(p)
+    if len(collapsed) <= width:
+        return collapsed.ljust(width)
+    parts = p.parts
+    for n in range(len(parts) - 1, 0, -1):
+        candidate = "…/" + "/".join(parts[-n:])
+        if len(candidate) <= width:
+            return candidate.ljust(width)
+    return ("…" + p.name)[:width].ljust(width)
 
 
 class SessionApp(App):
@@ -178,7 +256,7 @@ class SessionApp(App):
         self.title = "klawde"
         self.sub_title = "Enter: focus Kitty pane  ·  q: quit"
         table = self.query_one(DataTable)
-        table.add_columns("Session", "CWD", "Duration", "Kitty", "Ctx")
+        table.add_columns("", "Prompt", "Ctx", "CWD", "Duration", "Model", "Session", "Kitty")
         self._tick()
         self.set_interval(1.0, self._tick)
 
@@ -195,7 +273,9 @@ class SessionApp(App):
                 s.model = None
                 s.context_tokens = None
                 s.context_percent = None
+                s.prompt = None
                 continue
+            s.prompt = _read_first_prompt(tp)
             meta = _read_transcript_meta(tp)
             if meta is None:
                 continue
@@ -298,9 +378,18 @@ class SessionApp(App):
                 kitty_window_id=obj.get("kitty_window_id"),
                 started_at=existing.started_at if existing else started,
                 source=obj.get("source"),
+                status=existing.status if existing else "running",
             )
         elif event == "stop":
             self.sessions.pop(sid, None)
+        elif event == "needs_approval":
+            s = self.sessions.get(sid)
+            if s:
+                s.status = "needs_approval"
+        elif event == "working":
+            s = self.sessions.get(sid)
+            if s:
+                s.status = "running"
 
     def _render_table(self) -> None:
         table = self.query_one(DataTable)
@@ -312,15 +401,32 @@ class SessionApp(App):
                 cursor_row_key = None
 
         table.clear()
-        for sid, s in sorted(self.sessions.items(), key=lambda kv: kv[1].started_at):
-            kitty = str(s.kitty_window_id) if s.kitty_window_id is not None else "—"
-            ctx = f"{s.context_percent}%" if s.context_percent is not None else "—"
+        def sort_key(kv):
+            sid, s = kv
+            status_order = 0 if s.status == "needs_approval" else 1
+            delta = datetime.now(UTC) - s.started_at
+            return (status_order, -delta.total_seconds())
+
+        for sid, s in sorted(self.sessions.items(), key=sort_key):
+            kitty = (str(s.kitty_window_id) if s.kitty_window_id is not None else "—").rjust(4)
+            ctx: Text | str = _ctx_bar(s.context_percent) if s.context_percent is not None else "—".ljust(15)
+            if s.model:
+                model_str = s.model.removeprefix("claude-")
+                model_str = re.sub(r"-\d{8}", "", model_str)
+                model = model_str.ljust(15)
+            else:
+                model = "—".ljust(15)
+            cwd = _fmt_cwd(s.cwd)
+            prompt = (s.prompt or "—")[:30].ljust(30)
             table.add_row(
-                sid[:8],
-                Path(s.cwd).name or s.cwd or "—",
-                _fmt_duration(s.started_at),
-                kitty,
+                _status_icon(s.status),
+                prompt,
                 ctx,
+                cwd,
+                _fmt_duration(s.started_at).rjust(5),
+                model,
+                sid[:8],
+                kitty,
                 key=sid,
             )
 

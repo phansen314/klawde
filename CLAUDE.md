@@ -9,11 +9,13 @@ A Textual TUI that lists currently-open Claude Code sessions and, on Enter, focu
 ## Architecture (event flow)
 
 ```
-Claude Code SessionStart/Stop hook
+Claude Code hooks
+  • SessionStart, SessionEnd, Notification, PostToolUse
         │
         ▼
 hooks/emit-session-event.sh
   • reads stdin JSON from Claude Code
+  • event types: start, stop, needs_approval (Notification), working (PostToolUse)
   • appends one line to $CLAUDE_SESSION_EVENTS
     (default: ~/.claude/session-events.jsonl)
   • captures KITTY_WINDOW_ID at session start
@@ -25,6 +27,8 @@ hooks/emit-session-event.sh
 klawde TUI (src/klawde/tui.py — SessionApp)
   • tails the jsonl by inode + byte offset (handles truncation/rotation)
   • maintains an in-memory dict of live sessions
+  • updates session status: running ↔ needs_approval
+  • sorts: needs_approval first, then by duration desc
   • on Enter: subprocess kitten @ --to $KITTY_LISTEN_ON
                 focus-window --match id:<kitty_window_id>
 ```
@@ -37,9 +41,15 @@ The TUI is single-process; no daemon. It is launched (typically from a dedicated
 
 This file is consumed by `~/.config/kitty/focus-klawde.sh` (not in this repo), bound to `ctrl+space>c` in the user's kitty config, so the user can jump back to the klawde window itself from anywhere.
 
-### Hook wiring (outside repo)
+### Hook wiring
 
-`hooks/emit-session-event.sh` must be referenced from Claude Code's own settings (e.g. `~/.claude/settings.json`) under SessionStart and SessionEnd hooks. The hook is intentionally bash+jq, not Python, because Python cold-start blocks SessionStart.
+`hooks/emit-session-event.sh` must be wired into Claude Code's settings (`~/.claude/settings.json`):
+- **SessionStart**: `emit-session-event.sh start` — captures session birth, cwd, kitty window
+- **SessionEnd**: `emit-session-event.sh stop` — marks session closed
+- **Notification**: `emit-session-event.sh needs_approval` — detects permission prompts (check `notification_type` and message heuristics)
+- **PostToolUse**: `emit-session-event.sh working` — clears approval state when Claude resumes after user approval
+
+Hook is intentionally bash+jq, not Python, because Python cold-start blocks SessionStart.
 
 ## Commands (uv)
 
