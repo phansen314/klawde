@@ -6,93 +6,120 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Textual TUI that lists currently-open Claude Code sessions and, on Enter, focuses the kitty window where the selected session is running. It is a "jump back to where I was" tool for users juggling several Claude Code sessions across kitty windows/tabs.
 
-## Architecture (event flow)
+## Architecture (data flow)
 
 ```
 Claude Code hooks
-  • SessionStart, SessionEnd, Notification, PostToolUse
+  • SessionStart, SessionEnd, Notification, PostToolUse, statusline
         │
         ▼
-hooks/emit-session-event.sh
-  • reads stdin JSON from Claude Code
-  • event types: start, stop, needs_approval (Notification), working (PostToolUse)
-  • appends one line to $CLAUDE_SESSION_EVENTS
-    (default: ~/.claude/session-events.jsonl)
-  • captures KITTY_WINDOW_ID at session start
+metrics/*.sh (bash + jq + sqlite3)
+  • session_start.sh   — INSERT sessions row
+  • session_end.sh     — UPDATE status='stopped', stopped_at
+  • notification.sh    — UPDATE status='needs_approval' on permission prompts
+  • post_tool_use.sh   — UPDATE status='running' after tool resume
+  • kitty_start.sh     — UPSERT kitty window_id/listen_on into session_metadata
+  • statusline.sh      — UPDATE live metrics (model, context%, cost, rate limits,
+                          tokens, lines added/removed, …) on every tick
         │
         ▼
-~/.claude/session-events.jsonl  (append-only jsonl)
+~/.klawde/sessions.db   (SQLite, WAL mode)
+  • sessions           — per-session row, ~25 columns
+  • session_metadata   — namespaced key-value (kitty namespace: window_id, listen_on)
+  • events             — append-only audit log
         │
         ▼
-klawde TUI (src/klawde/tui.py — SessionApp)
-  • tails the jsonl by inode + byte offset (handles truncation/rotation)
-  • maintains an in-memory dict of live sessions
-  • updates session status: running ↔ needs_approval
-  • sorts: needs_approval first, then by duration desc
-  • on Enter: subprocess kitten @ --to $KITTY_LISTEN_ON
-                focus-window --match id:<kitty_window_id>
+tui/src/klawde/db.py (SessionRepo)
+  • opens read-only connection (file:...?mode=ro)
+  • one SQL query joining sessions + session_metadata for the kitty namespace
+  • returns list[Session] ordered: needs_approval first, then started_at DESC
+        │
+        ▼
+tui/src/klawde/tui.py (SessionApp)
+  • polls SessionRepo.list_sessions() every 1s
+  • renders a DataTable; Enter focuses the selected row's kitty window via
+    `kitten @ --to $KITTY_LISTEN_ON focus-window --match id:<kitty_window_id>`
 ```
 
 The TUI is single-process; no daemon. It is launched (typically from a dedicated kitty window) via `uv run klawde` or the installed `klawde` script.
 
 ### klawde's own window registration
 
-`main()` in `src/klawde/tui.py` writes `${XDG_RUNTIME_DIR:-/tmp}/klawde.window` on startup with two lines — klawde's own `KITTY_WINDOW_ID` and `KITTY_LISTEN_ON` — atomically via tempfile+rename, and unlinks it on exit. Any stale file from a prior crashed run is cleared on entry.
+`main()` in `tui/src/klawde/tui.py` writes `${XDG_RUNTIME_DIR:-/tmp}/klawde.window` on startup with two lines — klawde's own `KITTY_WINDOW_ID` and `KITTY_LISTEN_ON` — atomically via tempfile+rename, and unlinks it on exit. Any stale file from a prior crashed run is cleared on entry.
 
 This file is consumed by `~/.config/kitty/focus-klawde.sh` (not in this repo), bound to `ctrl+space>c` in the user's kitty config, so the user can jump back to the klawde window itself from anywhere.
 
 ### Hook wiring
 
-`hooks/emit-session-event.sh` must be wired into Claude Code's settings (`~/.claude/settings.json`):
-- **SessionStart**: `emit-session-event.sh start` — captures session birth, cwd, kitty window
-- **SessionEnd**: `emit-session-event.sh stop` — marks session closed
-- **Notification**: `emit-session-event.sh needs_approval` — detects permission prompts (check `notification_type` and message heuristics)
-- **PostToolUse**: `emit-session-event.sh working` — clears approval state when Claude resumes after user approval
-
-Hook is intentionally bash+jq, not Python, because Python cold-start blocks SessionStart.
+All hooks in `metrics/` must be wired into `~/.claude/settings.json` — `bash metrics/setup.sh` does not do this automatically. `session_start.sh` is **blocking** (no `async: true`) so it wins the race and creates the `sessions` row before `kitty_start.sh` runs and appends to `session_metadata` (FK-safe by construction). `statusline.sh` is wired via `statusLine.command`. Hooks are bash+jq+sqlite3 — Python cold-start would block SessionStart.
 
 ## Commands (uv)
 
 ```bash
-uv sync --extra dev             # install runtime + dev deps
-uv run klawde                   # start the TUI
-uv run scripts/seed_test_data.py   # seed /tmp/klawde-test/session-events.jsonl
-CLAUDE_SESSION_EVENTS=/tmp/klawde-test/session-events.jsonl uv run klawde
-uv run ruff check .             # lint
-uv run ruff format .            # format
-uv run mypy src                 # type-check
-uv run python -m pytest         # tests (see note below on why `-m pytest`)
-uv run python -m pytest tests/test_dup.py::test_duplicate_start_preserves_started_at   # single test
+cd tui
+uv sync --extra dev                    # install runtime + dev deps
+uv run klawde                          # start the TUI against ~/.klawde/sessions.db
+uv run scripts/seed_test_data.py       # seed /tmp/klawde-test/sessions.db
+KLAWDE_DB=/tmp/klawde-test/sessions.db uv run klawde   # TUI against seed DB
+uv run ruff check .                    # lint
+uv run ruff format .                   # format
+uv run mypy src                        # type-check
+uv run python -m pytest                # tests (see note below on why `-m pytest`)
+uv run python -m pytest tests/test_db.py::test_needs_approval_sorts_first   # single test
 ```
 
 ## Table columns
 
-Column order: `● | Prompt | Ctx | CWD | Duration | Model | Session | Kitty`
+Column order: `● | Ctx | CWD | Duration | Model | Session | Kitty`
 
-- **●** — status icon: green ● running, yellow ⏸ needs_approval
-- **Prompt** — first 30 chars of the first real user message in the transcript (skips slash commands, tool results, sidechain, meta entries). See `_read_first_prompt`.
-- **Ctx** — context window usage bar + %. Color: green <70%, yellow 70–84%, red ≥85% with ⚠. See `_ctx_bar`.
-- **CWD** — working directory, home-collapsed (`~/...`), left-ellipsis truncated to 30 chars. See `_fmt_cwd`.
-- **Duration** — time since session started.
-- **Model** — model name with `claude-` prefix and date suffix stripped.
+- **●** — status icon: green ● running, yellow ⏸ needs_approval. From `sessions.status`.
+- **Ctx** — context window usage bar + %. Color: green <70%, yellow 70–84%, red ≥85% with ⚠. From `sessions.context_percent`, rendered by `_ctx_bar`.
+- **CWD** — working directory, home-collapsed (`~/...`), left-ellipsis truncated to 30 chars. From `sessions.cwd`, rendered by `_fmt_cwd`.
+- **Duration** — time since session started. From `sessions.started_at`.
+- **Model** — model name with `claude-` prefix and date suffix stripped. From `sessions.model`.
 - **Session** — first 8 chars of session UUID.
-- **Kitty** — kitty window ID.
+- **Kitty** — kitty window ID. From `session_metadata` (namespace=kitty, key=window_id).
 
 ## Key files
 
-- `src/klawde/tui.py` — entire TUI, event-tailing logic, focus action, self-registration in `main()`.
-- `src/klawde/__main__.py` — thin entry re-exporting `main`.
-- `hooks/emit-session-event.sh` — the Claude Code hook.
-- `scripts/seed_test_data.py` — writes synthetic events to `/tmp/klawde-test/`.
-- `pyproject.toml` — hatchling + uv, ruff (line 100, py312), mypy, pytest-asyncio/xdist/cov.
+- `tui/src/klawde/tui.py` — entire TUI, rendering, focus action, self-registration in `main()`.
+- `tui/src/klawde/db.py` — `SessionRepo` + `Session` dataclass. Single SQL query, read-only connection.
+- `tui/src/klawde/__main__.py` — thin entry re-exporting `main`.
+- `tui/scripts/seed_test_data.py` — seeds a disposable SQLite DB at `/tmp/klawde-test/sessions.db`.
+- `tui/pyproject.toml` — hatchling + uv, ruff (line 100, py312), mypy, pytest-asyncio/xdist/cov.
+
+## metrics/ — SQLite data layer
+
+The single source of truth. All hooks write to `~/.klawde/sessions.db`; the TUI reads from it read-only.
+
+**Install (one-time, idempotent):**
+```bash
+bash metrics/setup.sh
+```
+
+**Schema:** three tables — `sessions` (per-session state, ~25 columns including cost, tokens, rate limits, git worktree, Claude Code version), `session_metadata` (namespaced KV; kitty namespace written by `kitty_start.sh`), `events` (append-only audit log). WAL mode, `auto_vacuum=INCREMENTAL`, `synchronous=NORMAL`.
+
+**Key files:**
+- `metrics/setup.sh` — copies scripts to `~/.klawde/`, creates DB + schema, idempotent `ALTER TABLE ADD COLUMN` loop for in-place schema evolution
+- `metrics/common.sh` — shared helpers: `sq_to`, `num_or_null_to`, `sq_or_null_to`, `stline_cache_path_to`, `now()`, `db()`
+- `metrics/session_start.sh` / `session_end.sh` / `notification.sh` / `post_tool_use.sh` — lifecycle hooks
+- `metrics/kitty_start.sh` — captures `KITTY_WINDOW_ID` / `KITTY_LISTEN_ON` into `session_metadata` on SessionStart. Runs after `session_start.sh` (which is blocking) to avoid FK races.
+- `metrics/statusline.sh` — per-tick UPDATE of live metrics + emoji-rich two-line output
+- `metrics/prune.sh` — retention: events >30d, stopped sessions >90d
+- `metrics/test_data.sh` — seed 4 fake sessions for manual hook testing
+- `metrics/simulate_hook.sh` — pipe JSON to a named hook and inspect DB state
+
+**Statusline:** `~/.klawde/statusline.sh` is a data-writing primitive that also prints the user-facing summary. Downstream composition (e.g., caveman) is the operator's responsibility; `setup.sh` intentionally does not wire it and instead prints an action-required banner pointing at `README.md` for examples.
 
 ## Conventions worth knowing
 
 - Python 3.12+, `from __future__ import annotations` in source files.
 - Ruff selects `E, F, I, UP, W`, ignores `E501` (line length is a soft 100).
 - Mypy ignores missing imports; `no-any-return` disabled.
-- Event-log IO is best-effort — every filesystem interaction is guarded against races (inode change, truncation, partial-write boundaries). Preserve this behavior when touching `_read_new_events`.
+- DB reads are read-only: `SessionRepo` opens with `file:...?mode=ro` URI. Transient `sqlite3.Error` (DB missing, mid-WAL-checkpoint) is swallowed and returns `[]`; next tick retries. WAL mode means readers never block writers.
+- All `metrics/*.sh` scripts are **bash 3.2 compatible** so they run on macOS `/bin/bash` (Apple froze there for licensing) as well as Linux bash 4/5. No `${var^}`, no `mapfile`, no associative arrays.
+- `INPUT=$(cat)` for stdin capture in hooks — do NOT use `$(</dev/stdin)`; Claude Code's invocation makes that read empty.
 - kitty remote control is assumed: `allow_remote_control yes` + `listen_on unix:/tmp/kitty-{kitty_pid}` in the user's kitty.conf. When this is missing, klawde surfaces the error via `self.notify(..., severity="error")` instead of crashing.
-- Duplicate `start` events for the same `session_id` (resume, re-hook) overwrite `cwd` and `kitty_window_id` but preserve the original `started_at`. Continuation semantics: same session, fresh location, Duration reflects total age.
-- Sessions are pruned if >30 min old AND (transcript mtime >30 min stale OR transcript missing). Young sessions are never pruned, avoiding startup races. See `_prune_stale`.
+- Session row `ON CONFLICT DO UPDATE` overwrites `cwd` and kitty metadata on resume while preserving `started_at`. Continuation semantics: same session, fresh location, Duration reflects total age.
+- Retention (`metrics/prune.sh`) handles stale cleanup; the TUI itself no longer prunes.
 - Run tests with `uv run python -m pytest`, not `uv run pytest`. The latter resolves via PATH to the pyenv shim, bypassing the project venv and failing with `ModuleNotFoundError: klawde`.

@@ -3,10 +3,10 @@
 A [Textual](https://textual.textualize.io/) TUI for managing multiple Claude Code sessions in [kitty](https://sw.kovidgoyal.net/kitty/). Shows all live sessions with status, context usage, CWD, model, and duration. Press Enter to jump to that session's kitty window.
 
 ```
-● | Prompt                        | Ctx        | CWD                | Duration | Model   | Session | Kitty
-──┼───────────────────────────────┼────────────┼────────────────────┼──────────┼─────────┼─────────┼──────
-⏸ | refactor the auth middleware  | ████░ 62%  | ~/code/myapp       | 00:14:22 | sonnet  | a3f9b2c1| 7
-● | fix the flaky test in CI      | ██░░░ 31%  | ~/code/klawde      | 00:03:07 | opus    | 9d1e4f82| 4
+● | Ctx        | CWD                | Duration | Model   | Session | Kitty
+──┼────────────┼────────────────────┼──────────┼─────────┼─────────┼──────
+⏸ | ████░ 62%  | ~/code/myapp       | 00:14:22 | sonnet  | a3f9b2c1| 7
+● | ██░░░ 31%  | ~/code/klawde      | 00:03:07 | opus    | 9d1e4f82| 4
 ```
 
 ## Prerequisites
@@ -14,7 +14,7 @@ A [Textual](https://textual.textualize.io/) TUI for managing multiple Claude Cod
 - [kitty terminal](https://sw.kovidgoyal.net/kitty/) with remote control enabled
 - [Claude Code](https://claude.ai/code) CLI (`claude`)
 - [uv](https://docs.astral.sh/uv/) (`pip install uv` or `brew install uv`)
-- `jq` (`apt install jq` / `brew install jq`)
+- `jq` and `sqlite3` (`apt install jq sqlite3` / `brew install jq sqlite3`)
 
 ## Installation
 
@@ -23,16 +23,18 @@ A [Textual](https://textual.textualize.io/) TUI for managing multiple Claude Cod
 ```bash
 git clone https://github.com/phansen314/klawde.git
 cd klawde
-uv sync
+uv sync --directory tui
 ```
 
-Or install directly:
+### 2. Install the SQLite data layer
 
 ```bash
-uv tool install git+https://github.com/phansen314/klawde.git
+bash metrics/setup.sh
 ```
 
-### 2. Configure kitty
+This copies the hook scripts to `~/.klawde/`, creates `~/.klawde/sessions.db` with WAL mode, and prints an action-required banner. `setup.sh` intentionally does **not** modify `~/.claude/settings.json` — you wire the hooks and statusline yourself in steps 4 and 5.
+
+### 3. Configure kitty
 
 Add to `~/.config/kitty/kitty.conf`:
 
@@ -47,7 +49,7 @@ Restart kitty (or reload config with `ctrl+shift+f5`) for changes to take effect
 > socket; `listen_on` sets the socket path. The `{kitty_pid}` placeholder makes each kitty
 > instance use a unique socket so multiple kitty instances don't collide.
 
-### 3. Wire Claude Code hooks
+### 4. Wire Claude Code hooks
 
 Add the following to `~/.claude/settings.json` (merge with existing `hooks` if present):
 
@@ -57,40 +59,29 @@ Add the following to `~/.claude/settings.json` (merge with existing `hooks` if p
     "SessionStart": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/klawde/hooks/emit-session-event.sh start"
-          }
+          { "type": "command", "command": "/home/YOU/.klawde/session_start.sh" },
+          { "type": "command", "command": "/home/YOU/.klawde/kitty_start.sh", "async": true }
         ]
       }
     ],
     "SessionEnd": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/klawde/hooks/emit-session-event.sh stop"
-          }
+          { "type": "command", "command": "/home/YOU/.klawde/session_end.sh", "async": true }
         ]
       }
     ],
     "Notification": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/klawde/hooks/emit-session-event.sh needs_approval"
-          }
+          { "type": "command", "command": "/home/YOU/.klawde/notification.sh", "async": true }
         ]
       }
     ],
     "PostToolUse": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/klawde/hooks/emit-session-event.sh working"
-          }
+          { "type": "command", "command": "/home/YOU/.klawde/post_tool_use.sh", "async": true }
         ]
       }
     ]
@@ -98,26 +89,35 @@ Add the following to `~/.claude/settings.json` (merge with existing `hooks` if p
 }
 ```
 
-Replace `/path/to/klawde` with the actual clone path (e.g. `~/code/klawde`). The hooks emit session lifecycle events to `~/.claude/session-events.jsonl`, which the TUI tails in real time.
+Replace `/home/YOU` with your home path. `session_start.sh` is **blocking** (no `async`) so it wins the race — `kitty_start.sh` then appends to `session_metadata` with the `sessions` FK row already in place.
 
-### 4. (Optional) Jump back to klawde from any window
+### 5. Wire the statusline
 
-klawde writes its own kitty window ID to `${XDG_RUNTIME_DIR:-/tmp}/klawde.window` on startup, so you can bind a hotkey to focus it from anywhere. The script is included at `hooks/focus-klawde.sh`.
+`~/.klawde/statusline.sh` writes live metrics (model, context %, cost, rate limits, …) to the DB every tick and prints a two-line emoji summary. In `~/.claude/settings.json`:
+
+*A) klawde only:*
+
+```json
+"statusLine": { "type": "command", "command": "/home/YOU/.klawde/statusline.sh" }
+```
+
+*B) klawde + another statusline (e.g. caveman)* via a small wrapper script — see the klawde README section *Composing statuslines* below.
+
+### 6. (Optional) Jump back to klawde from any window
+
+klawde writes its own kitty window ID to `${XDG_RUNTIME_DIR:-/tmp}/klawde.window` on startup, so you can bind a hotkey to focus it from anywhere. The script is included at `tui/kitty/focus-klawde.sh`.
 
 ```bash
-chmod +x /path/to/klawde/kitty/focus-klawde.sh
+chmod +x /path/to/klawde/tui/kitty/focus-klawde.sh
 ```
 
-Then bind it in `kitty.conf` — for example, a single keypress:
+Bind it in `kitty.conf`:
 
 ```conf
-map ctrl+shift+0 launch --type=background /path/to/klawde/kitty/focus-klawde.sh
-```
-
-Or a chord (`ctrl+space` then `c`):
-
-```conf
-map ctrl+space>c launch --type=background /path/to/klawde/kitty/focus-klawde.sh
+# Single key
+map ctrl+shift+0 launch --type=background /path/to/klawde/tui/kitty/focus-klawde.sh
+# Or a chord
+map ctrl+space>c launch --type=background /path/to/klawde/tui/kitty/focus-klawde.sh
 ```
 
 > **Note:** `launch --type=background` drops `KITTY_LISTEN_ON`, so `focus-klawde.sh` reads the
@@ -127,23 +127,24 @@ map ctrl+space>c launch --type=background /path/to/klawde/kitty/focus-klawde.sh
 
 ```bash
 # From the repo
+cd tui
 uv run klawde
 
 # Or if installed as a tool
 klawde
 ```
 
-Point klawde at a different event log (useful for testing):
+Point klawde at a different DB (useful for testing):
 
 ```bash
-CLAUDE_SESSION_EVENTS=/tmp/my-events.jsonl uv run klawde
+KLAWDE_DB=/tmp/klawde-test/sessions.db uv run klawde
 ```
 
 Seed synthetic test data:
 
 ```bash
 uv run scripts/seed_test_data.py
-CLAUDE_SESSION_EVENTS=/tmp/klawde-test/session-events.jsonl uv run klawde
+KLAWDE_DB=/tmp/klawde-test/sessions.db uv run klawde
 ```
 
 ## Keybindings
@@ -152,19 +153,68 @@ CLAUDE_SESSION_EVENTS=/tmp/klawde-test/session-events.jsonl uv run klawde
 |------------|-------------------------------------|
 | `Enter`    | Focus the selected session's window |
 | `q` / `Q`  | Quit                                |
-| `↑` / `↓`  | Navigate sessions                   |
+| `↑` / `i`  | Move cursor up                      |
+| `↓` / `k`  | Move cursor down                    |
 
 ## Environment variables
 
-| Variable               | Default                          | Purpose                        |
-|------------------------|----------------------------------|--------------------------------|
-| `CLAUDE_SESSION_EVENTS`| `~/.claude/session-events.jsonl` | Path to the event log          |
-| `KITTY_LISTEN_ON`      | *(set by kitty)*                 | Socket for remote control      |
-| `KITTY_WINDOW_ID`      | *(set by kitty)*                 | Window ID captured at hook time|
+| Variable          | Default                     | Purpose                         |
+|-------------------|-----------------------------|---------------------------------|
+| `KLAWDE_DB`       | `~/.klawde/sessions.db`     | Path to the SQLite DB           |
+| `KITTY_LISTEN_ON` | *(set by kitty)*            | Socket for remote control       |
+| `KITTY_WINDOW_ID` | *(set by kitty)*            | Window ID captured at hook time |
+
+## metrics — SQLite data layer
+
+The single source of truth. `metrics/*.sh` hooks write to `~/.klawde/sessions.db`; the TUI reads from it read-only.
+
+**Captures:** session status, CWD, model, context %, cost (USD equivalent for subscription users), session/api duration, token totals, rate limits (5h/7d), lines added/removed, kitty window/socket, Claude Code version, output style, git worktree, and a full audit event log.
+
+**Schema:** three tables — `sessions` (~25 columns), `session_metadata` (namespaced key-value), `events` (append-only). WAL mode.
+
+**Key files:**
+- `metrics/setup.sh` — idempotent installer
+- `metrics/session_start.sh` / `session_end.sh` / `notification.sh` / `post_tool_use.sh` — lifecycle hooks
+- `metrics/kitty_start.sh` — captures kitty window state into `session_metadata`
+- `metrics/statusline.sh` — per-tick metrics UPDATE + emoji-rich output
+- `metrics/prune.sh` — retention (events >30d, stopped sessions >90d)
+
+### Composing statuslines
+
+`~/.klawde/statusline.sh` does not chain to any downstream statusline — that's the operator's call. Example wrapper at `~/.claude/custom-status-line.sh`:
+
+```bash
+#!/usr/bin/env bash
+# klawde + caveman composed statusline.
+# caveman reads a flag file (no stdin); klawde inherits parent stdin directly.
+
+CAVEMAN_SL="$HOME/.claude/plugins/marketplaces/caveman/hooks/caveman-statusline.sh"
+if [ -f "$CAVEMAN_SL" ]; then
+  CAVEMAN_OUT=$(bash "$CAVEMAN_SL")
+  if [ -n "$CAVEMAN_OUT" ]; then
+    CAVEMAN_OUT="${CAVEMAN_OUT//\[CAVEMAN:/🦴:}"
+    CAVEMAN_OUT="${CAVEMAN_OUT//\[CAVEMAN\]/🦴}"
+    CAVEMAN_OUT="${CAVEMAN_OUT//]/}"
+    printf '%s ┃ ' "$CAVEMAN_OUT"
+  fi
+fi
+
+"$HOME/.klawde/statusline.sh"
+```
+
+Then point `statusLine.command` at `/home/YOU/.claude/custom-status-line.sh`. Any statusline that reads Claude Code's JSON from stdin slots into this pattern.
+
+### Testing
+
+```bash
+bash ~/.klawde/test_data.sh                         # seed 4 fake sessions
+bash ~/.klawde/simulate_hook.sh SessionStart /path/to/event.json
+```
 
 ## Development
 
 ```bash
+cd tui
 uv sync --extra dev
 uv run ruff check .
 uv run ruff format .
