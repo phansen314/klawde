@@ -51,7 +51,11 @@ This file is consumed by `~/.config/kitty/focus-klawde.sh` (not in this repo), b
 
 ### Hook wiring
 
-All hooks in `metrics/` must be wired into `~/.claude/settings.json` — `bash metrics/setup.sh` does not do this automatically. `session_start.sh` is **blocking** (no `async: true`) so it wins the race and creates the `sessions` row before `kitty_start.sh` runs and appends to `session_metadata` (FK-safe by construction). `statusline.sh` is wired via `statusLine.command`. Hooks are bash+jq+sqlite3 — Python cold-start would block SessionStart.
+All hooks in `metrics/` must be wired into `~/.claude/settings.json` — `bash metrics/setup.sh` does not do this automatically. Two hooks must run **blocking** (no `async: true`):
+- `session_start.sh` — creates the `sessions` row before `kitty_start.sh` appends to `session_metadata` (FK-safe by construction).
+- `session_end.sh` — writes `status='stopped'` + `stopped_at` before the Claude Code process exits. Async on a fast `/exit` loses the race and sessions stay `running` until pruned.
+
+The remaining hooks (`kitty_start.sh`, `notification.sh`, `post_tool_use.sh`) can run async. `statusline.sh` is wired via `statusLine.command`. Hooks are bash+jq+sqlite3 — Python cold-start would block SessionStart.
 
 ## Commands (uv)
 

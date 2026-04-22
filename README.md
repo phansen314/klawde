@@ -67,7 +67,7 @@ Add the following to `~/.claude/settings.json` (merge with existing `hooks` if p
     "SessionEnd": [
       {
         "hooks": [
-          { "type": "command", "command": "/home/YOU/.klawde/session_end.sh", "async": true }
+          { "type": "command", "command": "/home/YOU/.klawde/session_end.sh" }
         ]
       }
     ],
@@ -89,7 +89,13 @@ Add the following to `~/.claude/settings.json` (merge with existing `hooks` if p
 }
 ```
 
-Replace `/home/YOU` with your home path. `session_start.sh` is **blocking** (no `async`) so it wins the race — `kitty_start.sh` then appends to `session_metadata` with the `sessions` FK row already in place.
+Replace `/home/YOU` with your home path.
+
+Two hooks are **blocking** (no `async`):
+- `session_start.sh` — must finish before `kitty_start.sh` appends to `session_metadata`, so the `sessions` FK row is already in place.
+- `session_end.sh` — must finish before the Claude Code process exits. On a fast `/exit`, an async hook can be killed before it writes `stopped_at`, leaving the session stuck as `running` in klawde until pruned.
+
+> **Note:** Only sessions started *after* the hooks are wired are tracked. Existing sessions won't appear in klawde until you start a new one (or resume one in a new shell).
 
 ### 5. Wire the statusline
 
