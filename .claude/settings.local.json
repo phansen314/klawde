@@ -36,7 +36,8 @@
       "Bash(awk '/^## /{c++} c<=2')",
       "Bash(gh repo *)",
       "WebFetch(domain:github.com)",
-      "Bash(python3 -c \"import json; d=json.load\\(open\\('/home/superuser/.claude/settings.json'\\)\\); print\\(json.dumps\\(d['hooks']['SessionStart'], indent=2\\)\\)\")"
+      "Bash(python3 -c \"import json; d=json.load\\(open\\('/home/superuser/.claude/settings.json'\\)\\); print\\(json.dumps\\(d['hooks']['SessionStart'], indent=2\\)\\)\")",
+      "Bash(git *)"
     ]
   }
 }

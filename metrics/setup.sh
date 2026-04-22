@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     git_worktree TEXT,
     exceeds_200k_tokens INTEGER,
     output_style TEXT,
+    prev_cost_usd REAL,
+    prev_cost_sampled_at TEXT,
     started_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     stopped_at TEXT
@@ -105,7 +107,9 @@ for col_spec in \
   "claude_code_version TEXT" \
   "git_worktree TEXT" \
   "exceeds_200k_tokens INTEGER" \
-  "output_style TEXT"; do
+  "output_style TEXT" \
+  "prev_cost_usd REAL" \
+  "prev_cost_sampled_at TEXT"; do
   col_name="${col_spec%% *}"
   exists=$(sqlite3 "$KLAWDE_DIR/sessions.db" \
     "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='$col_name';")

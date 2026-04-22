@@ -90,6 +90,18 @@ if [ -n "$SID" ]; then
   rate_limit_5h_resets_at = COALESCE(strftime('%Y-%m-%dT%H:%M:%SZ', $RL5H_RESETS_V, 'unixepoch'), rate_limit_5h_resets_at),
   rate_limit_7d_percent   = COALESCE($RL7D_PCT_V, rate_limit_7d_percent),
   rate_limit_7d_resets_at = COALESCE(strftime('%Y-%m-%dT%H:%M:%SZ', $RL7D_RESETS_V, 'unixepoch'), rate_limit_7d_resets_at),
+  prev_cost_usd           = CASE
+                              WHEN prev_cost_sampled_at IS NULL
+                                OR (strftime('%s','now') - strftime('%s', prev_cost_sampled_at)) > 300
+                              THEN total_cost_usd
+                              ELSE prev_cost_usd
+                            END,
+  prev_cost_sampled_at    = CASE
+                              WHEN prev_cost_sampled_at IS NULL
+                                OR (strftime('%s','now') - strftime('%s', prev_cost_sampled_at)) > 300
+                              THEN updated_at
+                              ELSE prev_cost_sampled_at
+                            END,
   total_cost_usd          = COALESCE($COST_V, total_cost_usd),
   original_cwd            = COALESCE($OCWD_Q, original_cwd),
   api_duration_ms         = COALESCE($API_MS_V, api_duration_ms),
