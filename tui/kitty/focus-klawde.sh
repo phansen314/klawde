@@ -8,9 +8,9 @@ set -euo pipefail
 window_file="${XDG_RUNTIME_DIR:-/tmp}/klawde.window"
 [[ -f "$window_file" ]] || exit 0
 
-mapfile -t lines < "$window_file"
-window_id="${lines[0]:-}"
-listen_on="${lines[1]:-}"
+window_id=""
+listen_on=""
+{ IFS= read -r window_id && IFS= read -r listen_on; } < "$window_file" || :
 
 [[ -z "$window_id" || -z "$listen_on" ]] && exit 0
 
