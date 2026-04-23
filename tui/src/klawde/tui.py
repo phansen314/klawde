@@ -13,6 +13,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Static
 
@@ -43,24 +44,18 @@ def _context_percent(tokens: int, window: int) -> int:
     return pct
 
 
-_BAR_WIDTH = 10
-
-
 def _ctx_bar(pct: int) -> Text:
-    filled = round(pct * _BAR_WIDTH / 100)
-    if filled < 0:
-        filled = 0
-    elif filled > _BAR_WIDTH:
-        filled = _BAR_WIDTH
-    bar = "█" * filled + " " * (_BAR_WIDTH - filled)
+    if pct < 0:
+        pct = 0
+    elif pct > 100:
+        pct = 100
     if pct < 70:
         color = "green"
     elif pct < 85:
         color = "yellow"
     else:
         color = "red"
-    suffix = " ⚠" if pct >= 85 else ""
-    return Text(f"{bar} {pct}%{suffix}", style=color)
+    return Text(f"🧠 {pct:>5}%", style=color)
 
 
 def _fmt_cost(usd: float | None) -> str:
@@ -96,11 +91,11 @@ def _fmt_burn_cell(usd_per_hr: float | None) -> str:
 def _summary_row(rl: RateLimits | None, burn_usd_per_hr: float | None) -> tuple[str, ...]:
     r = rl or RateLimits(None, None, None, None)
     return (
-        _fmt_pct_cell(r.five_hour_pct),
-        _fmt_resets_cell(r.five_hour_resets_at, include_date=False),
-        _fmt_pct_cell(r.seven_day_pct),
-        _fmt_resets_cell(r.seven_day_resets_at, include_date=True),
-        _fmt_burn_cell(burn_usd_per_hr),
+        f"⏳ {_fmt_pct_cell(r.five_hour_pct)}",
+        f"🔄 {_fmt_resets_cell(r.five_hour_resets_at, include_date=False)}",
+        f"📅 {_fmt_pct_cell(r.seven_day_pct)}",
+        f"🔄 {_fmt_resets_cell(r.seven_day_resets_at, include_date=True)}",
+        f"🔥 {_fmt_burn_cell(burn_usd_per_hr)}",
     )
 
 
@@ -154,6 +149,14 @@ def _fmt_cwd(cwd: str, width: int = 30) -> str:
         if len(candidate) <= width:
             return candidate.ljust(width)
     return ("…" + p.name)[:width].ljust(width)
+
+
+def _fmt_branch(branch: str | None, width: int = 30) -> str:
+    if not branch:
+        return EMPTY.ljust(width)
+    if len(branch) <= width:
+        return branch.ljust(width)
+    return ("…" + branch[-(width - 1) :]).ljust(width)
 
 
 _MAX_BODY_LINES = 30
@@ -349,10 +352,11 @@ class PendingPromptScreen(ModalScreen["Session | None"]):
 
 
 class SessionApp(App):
+    ENABLE_COMMAND_PALETTE = False
     CSS = """
     DataTable#sessions { height: 1fr; }
-    DataTable#summary { height: auto; margin-bottom: 1; }
-    DataTable#summary.-empty { display: none; }
+    HeaderTitle { content-align: left middle; padding-left: 1; }
+    HeaderIcon { display: none; }
     """
     BINDINGS = [
         Binding("q", "quit", "Quit"),
@@ -369,22 +373,22 @@ class SessionApp(App):
         self._pending_cache = PendingToolCache()
         self.sessions: list[Session] = []
 
+    def format_title(self, title: str, sub_title: str) -> Content:
+        title_c = Content(title)
+        if not sub_title:
+            return title_c
+        return Content.assemble(title_c, (" · ", "dim"), Content(sub_title).stylize("dim"))
+
     def compose(self) -> ComposeResult:
         yield Header()
-        yield DataTable(id="summary", show_cursor=False, classes="-empty")
         yield DataTable(id="sessions", cursor_type="row", zebra_stripes=True)
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = "klawde"
-        self.sub_title = "Enter: focus Kitty pane  ·  space: inspect  ·  q: quit"
         sessions = self.query_one("#sessions", DataTable)
-        sessions.add_columns("", "Ctx", "CWD", "Duration", "Idle", "Model", "Cost", "Session", "Kitty")
-        summary = self.query_one("#summary", DataTable)
-        summary.add_columns("5h", "5h Resets", "7d", "7d Resets", "Burn")
-        # Summary is a display-only read-out; don't let it steal focus from
-        # the sessions table (which is what arrows/enter/space target).
-        summary.can_focus = False
+        for label in ("", "Ctx", "Location", "Time", "Model", "Kitty"):
+            sessions.add_column(Text(label, justify="center"))
         sessions.focus()
         self._tick()
         self.set_interval(1.0, self._tick)
@@ -395,10 +399,9 @@ class SessionApp(App):
             self._repo.get_rate_limits(),
             self._repo.get_burn_rate_per_hr(),
         )
-        summary = self.query_one("#summary", DataTable)
-        summary.clear()
-        summary.add_row(*row)
-        summary.set_class(all(c == EMPTY for c in row), "-empty")
+        self.sub_title = (
+            "" if all(c.endswith(EMPTY) for c in row) else "   ·   ".join(row)
+        )
         self._render_table()
 
     def _render_table(self) -> None:
@@ -415,31 +418,39 @@ class SessionApp(App):
         table.clear()
 
         for s in self.sessions:
-            kitty = (
-                str(s.kitty_window_id) if s.kitty_window_id is not None else EMPTY
-            ).rjust(4)
-            ctx: Text | str = (
+            kitty_id = str(s.kitty_window_id) if s.kitty_window_id is not None else EMPTY
+            ctx_top: Text | str = (
                 _ctx_bar(s.context_percent)
                 if s.context_percent is not None
-                else EMPTY.ljust(15)
+                else " " * 9
             )
+            cost_str = _fmt_cost(s.total_cost_usd).strip() or EMPTY
+            ctx_cell = Text.assemble(ctx_top, "\n", f"💰 {cost_str.rjust(6)}")
             if s.model:
                 model_str = s.model.removeprefix("claude-")
                 model_str = re.sub(r"-\d{8}", "", model_str)
-                model = model_str.ljust(15)
             else:
-                model = EMPTY.ljust(15)
-            cwd = _fmt_cwd(s.cwd)
+                model_str = EMPTY
+            cwd_line = f"📁 {_fmt_cwd(s.cwd)}"
+            branch_line = f"🌿 {_fmt_branch(s.git_branch)}" if s.git_branch else " " * 33
+            location = Text(f"{cwd_line}\n{branch_line}")
+            time_cell = Text(
+                f"⏱️ {_fmt_duration(s.started_at).rjust(6)}\n"
+                f"💤 {_fmt_idle(s.updated_at).rjust(6)}"
+            )
+            model_cell = Text(
+                f"🤖 {model_str.rjust(12)}\n"
+                f"🪪 {s.session_id[:8].rjust(12)}"
+            )
+            kitty_cell = Text(f"{kitty_id.rjust(4)}\n{' ' * 4}")
             table.add_row(
                 _status_icon(s.status),
-                ctx,
-                cwd,
-                _fmt_duration(s.started_at).rjust(5),
-                _fmt_idle(s.updated_at).rjust(5),
-                model,
-                _fmt_cost(s.total_cost_usd),
-                s.session_id[:8],
-                kitty,
+                ctx_cell,
+                location,
+                time_cell,
+                model_cell,
+                kitty_cell,
+                height=2,
                 key=s.session_id,
             )
 
@@ -568,7 +579,28 @@ def _state_file() -> Path:
     return Path(base) / "klawde.window"
 
 
+def _prune_async() -> None:
+    """Fire-and-forget retention + zombie reap at startup.
+
+    prune.sh is idempotent and fast (~tens of ms); running it here means the
+    first list_sessions() never sees rows left stale by a machine suspend."""
+    import subprocess
+    script = Path.home() / ".klawde" / "prune.sh"
+    if not script.exists():
+        return
+    try:
+        subprocess.Popen(
+            ["bash", str(script)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
 def main() -> None:
+    _prune_async()
     sf = _state_file()
     try:
         sf.unlink()

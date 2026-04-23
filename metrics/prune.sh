@@ -10,6 +10,15 @@
 # so a plain string comparison against `timestamp` / `stopped_at` works.
 db <<'ENDSQL'
 BEGIN;
+-- Zombie reap: active sessions that haven't ticked for >4h. Covers machine
+-- suspend/crash where session_end.sh never fired. statusline bumps
+-- updated_at on every render, so a gap this wide means the session is gone.
+UPDATE sessions
+   SET status     = 'stopped',
+       stopped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ WHERE status IN ('running', 'needs_approval')
+   AND updated_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-4 hours');
+
 DELETE FROM events
  WHERE timestamp < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 days');
 

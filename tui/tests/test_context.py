@@ -56,25 +56,12 @@ def test_ctx_bar_red_at_85_and_above() -> None:
     assert "red" in str(_ctx_bar(100).style)
 
 
-def test_ctx_bar_warn_indicator_at_85() -> None:
-    assert "⚠" not in _ctx_bar(84).plain
-    assert "⚠" in _ctx_bar(85).plain
-    assert "⚠" in _ctx_bar(100).plain
-
-
-def test_ctx_bar_filled_matches_percent() -> None:
-    # pct=50 with 10-wide bar → 5 filled
-    assert _ctx_bar(50).plain.startswith("█████     ")
-    # pct=30 → 3 filled
-    assert _ctx_bar(30).plain.startswith("███       ")
-
-
-def test_ctx_bar_zero_all_empty() -> None:
-    assert _ctx_bar(0).plain == "           0%"
-
-
-def test_ctx_bar_hundred_all_filled() -> None:
-    assert _ctx_bar(100).plain == "██████████ 100% ⚠"
+def test_ctx_bar_format_fixed_width() -> None:
+    # 🧠 + space + pct rjust(5) + % → stable width regardless of pct digits,
+    # inner field sized to align vertically with the 💰 cost line underneath.
+    assert _ctx_bar(0).plain == "🧠     0%"
+    assert _ctx_bar(42).plain == "🧠    42%"
+    assert _ctx_bar(100).plain == "🧠   100%"
 
 
 def test_ctx_bar_shows_percent_label() -> None:

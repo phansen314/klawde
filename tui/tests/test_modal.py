@@ -23,6 +23,8 @@ def _session(sid: str = "aaaaaaaa1111") -> Session:
         total_cost_usd=0.12,
         updated_at=now,
         transcript_path="/tmp/demo.jsonl",
+        git_branch="main",
+        git_worktree="/tmp/demo",
     )
 
 

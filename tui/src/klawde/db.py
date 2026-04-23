@@ -24,6 +24,8 @@ class Session:
     total_cost_usd: float | None
     updated_at: datetime
     transcript_path: str | None
+    git_branch: str | None
+    git_worktree: str | None
 
 
 @dataclass
@@ -45,11 +47,14 @@ SELECT
   s.total_cost_usd,
   s.updated_at,
   s.transcript_path,
+  s.git_branch,
+  s.git_worktree,
   MAX(CASE WHEN m.key = 'window_id' THEN m.value END) AS kitty_window_id
 FROM sessions s
 LEFT JOIN session_metadata m
   ON s.session_id = m.session_id AND m.namespace = 'kitty'
 WHERE s.status IN ('running', 'needs_approval')
+  AND s.updated_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-4 hours')
 GROUP BY s.session_id
 ORDER BY (s.status = 'needs_approval') DESC, s.started_at DESC
 """
@@ -116,6 +121,8 @@ def _row_to_session(r: sqlite3.Row) -> Session:
         total_cost_usd=r["total_cost_usd"],
         updated_at=_parse_ts(r["updated_at"]),
         transcript_path=r["transcript_path"],
+        git_branch=r["git_branch"],
+        git_worktree=r["git_worktree"],
     )
 
 

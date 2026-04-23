@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from klawde.db import SessionRepo
+
+
+def _fresh_ts(offset_minutes: int = 0) -> str:
+    return (datetime.now(UTC) - timedelta(minutes=offset_minutes)).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z"
+    )
 
 # Mirrors metrics/setup.sh — intentionally inlined so the test is self-contained
 # and doesn't shell out. Keep in sync when schema changes.
@@ -32,6 +39,7 @@ CREATE TABLE sessions (
     total_output_tokens INTEGER,
     claude_code_version TEXT,
     git_worktree TEXT,
+    git_branch TEXT,
     exceeds_200k_tokens INTEGER,
     output_style TEXT,
     prev_cost_usd REAL,
@@ -70,13 +78,19 @@ def _insert_session(
     status: str = "running",
     model: str | None = "claude-opus-4-7",
     context_percent: int | None = 12,
-    started_at: str = "2026-04-20T10:00:00.000Z",
+    started_at: str | None = None,
+    updated_at: str | None = None,
 ) -> None:
+    started_at = started_at or _fresh_ts(5)
+    # updated_at defaults to "now" regardless of started_at so tests that
+    # pin started_at to an absolute date still pass the repo's 4h zombie
+    # filter. Tests that want to exercise staleness pass updated_at explicitly.
+    updated_at = updated_at or _fresh_ts(0)
     conn = sqlite3.connect(db)
     conn.execute(
         "INSERT INTO sessions(session_id, cwd, status, model, context_percent, started_at, updated_at) "
         "VALUES(?, ?, ?, ?, ?, ?, ?)",
-        (sid, cwd, status, model, context_percent, started_at, started_at),
+        (sid, cwd, status, model, context_percent, started_at, updated_at),
     )
     conn.commit()
     conn.close()
@@ -135,6 +149,16 @@ def test_stopped_sessions_are_excluded(db: Path) -> None:
     sessions = SessionRepo(db).list_sessions()
     assert len(sessions) == 1
     assert sessions[0].session_id.startswith("running")
+
+
+def test_zombie_sessions_excluded_when_updated_at_older_than_4h(db: Path) -> None:
+    # Fresh session shows; stale (>4h) does not — protects against machines
+    # that suspended without session_end.sh firing.
+    _insert_session(db, "fresh-0000-0000-0000-000000000000", updated_at=_fresh_ts(10))
+    _insert_session(db, "zombie-0000-0000-0000-000000000000", updated_at=_fresh_ts(60 * 5))
+    sessions = SessionRepo(db).list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0].session_id.startswith("fresh")
 
 
 def test_needs_approval_sorts_first(db: Path) -> None:

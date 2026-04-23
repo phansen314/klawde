@@ -37,7 +37,26 @@
       "Bash(gh repo *)",
       "WebFetch(domain:github.com)",
       "Bash(python3 -c \"import json; d=json.load\\(open\\('/home/superuser/.claude/settings.json'\\)\\); print\\(json.dumps\\(d['hooks']['SessionStart'], indent=2\\)\\)\")",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Read(//tmp/**)",
+      "Bash(rm -rf klawde-setup-test)",
+      "Bash(mkdir klawde-setup-test *)",
+      "Bash(HOME=/tmp/klawde-setup-test bash /home/superuser/code/klawde/metrics/setup.sh)",
+      "Bash(rm -rf /tmp/klawde-alter-test)",
+      "Bash(mkdir -p /tmp/klawde-alter-test/.klawde)",
+      "Bash(HOME=/tmp/klawde-alter-test bash /home/superuser/code/klawde/metrics/setup.sh)",
+      "Bash(rm -rf /tmp/klawde-e2e)",
+      "Bash(HOME=/tmp/klawde-e2e bash /home/superuser/code/klawde/metrics/setup.sh)",
+      "Bash(HOME=/tmp/klawde-e2e bash /tmp/klawde-e2e/.klawde/session_start.sh)",
+      "Bash(HOME=/tmp/klawde-e2e bash /tmp/klawde-e2e/.klawde/statusline.sh)",
+      "Bash(timeout 2 env KLAWDE_DB=/tmp/klawde-test/sessions.db uv run klawde --help)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(timeout 2 env KLAWDE_DB=/tmp/klawde-test/sessions.db COLUMNS=100 LINES=30 uv run klawde)",
+      "Bash(echo \"version: $\\(sqlite3 ~/.klawde/sessions.db 'PRAGMA user_version;'\\)\")",
+      "Bash(timeout 2 env KLAWDE_DB=/tmp/klawde-test/sessions.db COLUMNS=140 LINES=40 uv run klawde)",
+      "Bash(timeout 2 env KLAWDE_DB=/tmp/klawde-test/sessions.db COLUMNS=120 LINES=40 uv run klawde)",
+      "Bash(timeout 2 env KLAWDE_DB=/tmp/klawde-test/sessions.db COLUMNS=150 LINES=40 uv run klawde)",
+      "Bash(timeout 2 env COLUMNS=150 LINES=40 uv run klawde)"
     ]
   }
 }

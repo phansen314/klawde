@@ -37,6 +37,30 @@ $(printf '%s' "$INPUT" | jq -rj '[
 ] | map(. // "" | tostring) | join("\u001f")' 2>/dev/null)
 EOF
 
+# 🌿 Branch — pure-bash walk up from cwd looking for .git/ (regular repo) or
+# .git file (linked worktree). Zero forks. Computed here (above the fingerprint
+# + UPDATE) so it can be persisted; also consumed by the display block below.
+_branch=""
+if [ -n "$CWD_JSON" ]; then
+  _dir="$CWD_JSON"
+  while [ -n "$_dir" ] && [ "$_dir" != "/" ]; do
+    if [ -f "$_dir/.git/HEAD" ]; then
+      IFS= read -r _head < "$_dir/.git/HEAD"
+      break
+    elif [ -f "$_dir/.git" ]; then
+      IFS= read -r _gitfile < "$_dir/.git"
+      _gitdir="${_gitfile#gitdir: }"
+      [ -f "$_gitdir/HEAD" ] && IFS= read -r _head < "$_gitdir/HEAD"
+      break
+    fi
+    _dir="${_dir%/*}"
+  done
+  case "$_head" in
+    "ref: refs/heads/"*) _branch="${_head#ref: refs/heads/}" ;;
+    ?*)                  _branch="${_head:0:7}" ;;   # detached: short sha
+  esac
+fi
+
 if [ -n "$SID" ]; then
   # Per-session diff cache: skip UPDATE (and fork) when nothing changed since
   # last render. Cache file lives in /run (tmpfs), one per session. Mismatched
@@ -47,7 +71,7 @@ if [ -n "$SID" ]; then
   # Fingerprint uses raw epoch seconds rather than ISO. SQLite converts to ISO
   # via strftime(..., 'unixepoch') in the UPDATE, saving two `date` forks per
   # cache miss and keeping change-detection functionally identical.
-  FP="$MODEL|$SNAME|$CTX_PCT|$CTX_SIZE|$RL5H_PCT|$RL5H_RESETS_RAW|$RL7D_PCT|$RL7D_RESETS_RAW|$COST|$OCWD|$API_MS|$LINES_ADD|$LINES_DEL|$TOT_IN|$TOT_OUT|$VER|$GWT|$EXC_200K|$OSTYLE"
+  FP="$MODEL|$SNAME|$CTX_PCT|$CTX_SIZE|$RL5H_PCT|$RL5H_RESETS_RAW|$RL7D_PCT|$RL7D_RESETS_RAW|$COST|$OCWD|$API_MS|$LINES_ADD|$LINES_DEL|$TOT_IN|$TOT_OUT|$VER|$GWT|$_branch|$EXC_200K|$OSTYLE"
   PREV=""
   [ -f "$CACHE" ] && IFS= read -r PREV < "$CACHE"
 
@@ -70,6 +94,7 @@ if [ -n "$SID" ]; then
     num_or_null_to TOT_OUT_V     "$TOT_OUT"
     sq_or_null_to  VER_Q         "$VER"
     sq_or_null_to  GWT_Q         "$GWT"
+    sq_or_null_to  BRANCH_Q      "$_branch"
     num_or_null_to EXC_200K_V    "$EXC_200K"
     sq_or_null_to  OSTYLE_Q      "$OSTYLE"
 
@@ -111,6 +136,7 @@ if [ -n "$SID" ]; then
   total_output_tokens     = COALESCE($TOT_OUT_V, total_output_tokens),
   claude_code_version     = COALESCE($VER_Q, claude_code_version),
   git_worktree            = COALESCE($GWT_Q, git_worktree),
+  git_branch              = COALESCE($BRANCH_Q, git_branch),
   exceeds_200k_tokens     = COALESCE($EXC_200K_V, exceeds_200k_tokens),
   output_style            = COALESCE($OSTYLE_Q, output_style),
   updated_at              = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -148,28 +174,7 @@ LINE1+=("🧠 ${CTX_PCT_INT}%")
 # 📁 Folder — basename of the JSON-provided cwd.
 [ -n "$CWD_JSON" ] && LINE1+=("📁 ${CWD_JSON##*/}")
 
-# 🌿 Branch — pure-bash walk up from cwd looking for .git/ (regular repo) or
-# .git file (linked worktree). Zero forks.
-_branch=""
-if [ -n "$CWD_JSON" ]; then
-  _dir="$CWD_JSON"
-  while [ -n "$_dir" ] && [ "$_dir" != "/" ]; do
-    if [ -f "$_dir/.git/HEAD" ]; then
-      IFS= read -r _head < "$_dir/.git/HEAD"
-      break
-    elif [ -f "$_dir/.git" ]; then
-      IFS= read -r _gitfile < "$_dir/.git"
-      _gitdir="${_gitfile#gitdir: }"
-      [ -f "$_gitdir/HEAD" ] && IFS= read -r _head < "$_gitdir/HEAD"
-      break
-    fi
-    _dir="${_dir%/*}"
-  done
-  case "$_head" in
-    "ref: refs/heads/"*) _branch="${_head#ref: refs/heads/}" ;;
-    ?*)                  _branch="${_head:0:7}" ;;   # detached: short sha
-  esac
-fi
+# 🌿 Branch — computed above; displayed here.
 [ -n "$_branch" ] && LINE1+=("🌿 $_branch")
 
 # ⏱️ 5h rate limit. Reset time local TZ, 12-hour, no date (always today-ish

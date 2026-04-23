@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     total_output_tokens INTEGER,
     claude_code_version TEXT,
     git_worktree TEXT,
+    git_branch TEXT,
     exceeds_200k_tokens INTEGER,
     output_style TEXT,
     prev_cost_usd REAL,
@@ -162,19 +163,19 @@ def main() -> None:
         }) + "\n")
 
     sessions = [
-        # (sid, cwd, status, model, ctx_pct, started_offset_min, kitty_wid, cost, prev_cost, prev_sampled_ago_min, transcript_path)
-        ("aaaaaaaa1111", "/home/user/alpha-project", "running",         "claude-opus-4-7",   12,  5,  3,  4.80,  4.40, 2,    None),
-        ("bbbbbbbb2222", "/home/user/beta-service",  "needs_approval",  "claude-sonnet-4-6", 42, 20,  7,  0.03,  0.02, 3,    str(pending_fixture)),
-        ("cccccccc3333", "/var/log",                 "running",         "claude-haiku-4-5",   8, 75, None, None, None, None, None),
-        ("dddddddd4444", "/tmp/ghost",               "running",         "claude-opus-4-7",   67, 30, 99, 27.40, 27.10, 1,    None),
-        ("eeeeeeee5555", "/home/user/gamma-tool",    "needs_approval",  "claude-opus-4-7",   30, 10, 11, 0.50,  0.45,  2,    str(stale_fixture)),
-        ("ffffffff6666", "/home/user/delta-app",     "needs_approval",  "claude-opus-4-7",   22, 15, 13, 1.25,  1.20,  2,    str(auq_fixture)),
+        # (sid, cwd, status, model, ctx_pct, started_offset_min, kitty_wid, cost, prev_cost, prev_sampled_ago_min, transcript_path, branch)
+        ("aaaaaaaa1111", "/home/user/alpha-project", "running",         "claude-opus-4-7",   12,  5,  3,  4.80,  4.40, 2,    None,                  "main"),
+        ("bbbbbbbb2222", "/home/user/beta-service",  "needs_approval",  "claude-sonnet-4-6", 42, 20,  7,  0.03,  0.02, 3,    str(pending_fixture),  "feat/cleanup-deps"),
+        ("cccccccc3333", "/var/log",                 "running",         "claude-haiku-4-5",   8, 75, None, None, None, None, None,                  None),
+        ("dddddddd4444", "/tmp/ghost",               "running",         "claude-opus-4-7",   67, 30, 99, 27.40, 27.10, 1,    None,                  "a1b2c3d"),
+        ("eeeeeeee5555", "/home/user/gamma-tool",    "needs_approval",  "claude-opus-4-7",   30, 10, 11, 0.50,  0.45,  2,    str(stale_fixture),    "release/2.4"),
+        ("ffffffff6666", "/home/user/delta-app",     "needs_approval",  "claude-opus-4-7",   22, 15, 13, 1.25,  1.20,  2,    str(auq_fixture),      "phansen/really-long-branch-name-for-truncation"),
     ]
 
     # Rate limits are account-level; attach to whichever session ticks last.
     # The TUI picks the row with the newest updated_at, so put RL values only
     # on the most-recently-updated seed session (offset 5m → alpha-project).
-    for sid, cwd, status, model, ctx, off, kw, cost, prev_cost, prev_ago, tpath in sessions:
+    for sid, cwd, status, model, ctx, off, kw, cost, prev_cost, prev_ago, tpath, branch in sessions:
         ts = _ts(off)
         is_latest = off == min(s[5] for s in sessions)
         rl_5h_pct = 45.0 if is_latest else None
@@ -186,13 +187,13 @@ def main() -> None:
                                     prev_cost_usd, prev_cost_sampled_at,
                                     rate_limit_5h_percent, rate_limit_5h_resets_at,
                                     rate_limit_7d_percent, rate_limit_7d_resets_at,
-                                    transcript_path)
-               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                    transcript_path, git_branch)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (sid, cwd, status, model, ctx, ts, ts, cost,
              prev_cost, prev_sampled_at,
              rl_5h_pct, rl_5h_resets if rl_5h_pct is not None else None,
              rl_7d_pct, rl_7d_resets if rl_7d_pct is not None else None,
-             tpath),
+             tpath, branch),
         )
         if kw is not None:
             conn.execute(

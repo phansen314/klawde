@@ -59,7 +59,7 @@ def test_fmt_burn_cell_large() -> None:
 
 def test_summary_row_all_dashes_when_empty() -> None:
     row = _summary_row(None, None)
-    assert row == ("—", "—", "—", "—", "—")
+    assert row == ("⏳ —", "🔄 —", "📅 —", "🔄 —", "🔥 —")
 
 
 def test_summary_row_populates_cells() -> None:
@@ -68,4 +68,4 @@ def test_summary_row_populates_cells() -> None:
         seven_day_pct=12.0, seven_day_resets_at=None,
     )
     row = _summary_row(rl, 18.0)
-    assert row == ("45%", "—", "12%", "—", "$18.00/hr")
+    assert row == ("⏳ 45%", "🔄 —", "📅 12%", "🔄 —", "🔥 $18.00/hr")

@@ -74,13 +74,16 @@ uv run python -m pytest tests/test_db.py::test_needs_approval_sorts_first   # si
 
 ## Table columns
 
-Column order: `● | Ctx | CWD | Duration | Model | Session | Kitty`
+Column order: `● | Ctx | CWD | Branch | Duration | Idle | Model | Cost | Session | Kitty`
 
 - **●** — status icon: green ● running, yellow ⏸ needs_approval. From `sessions.status`.
 - **Ctx** — context window usage bar + %. Color: green <70%, yellow 70–84%, red ≥85% with ⚠. From `sessions.context_percent`, rendered by `_ctx_bar`.
 - **CWD** — working directory, home-collapsed (`~/...`), left-ellipsis truncated to 30 chars. From `sessions.cwd`, rendered by `_fmt_cwd`.
+- **Branch** — git branch (or 7-char short sha when detached), left-ellipsis truncated to 20 chars. From `sessions.git_branch`, rendered by `_fmt_branch`. Populated on every statusline tick by a zero-fork pure-bash walk from `cwd` to the nearest `.git/HEAD` (regular repo or linked worktree).
 - **Duration** — time since session started. From `sessions.started_at`.
+- **Idle** — time since last update. From `sessions.updated_at`.
 - **Model** — model name with `claude-` prefix and date suffix stripped. From `sessions.model`.
+- **Cost** — total_cost_usd with burn-rate context via the summary row.
 - **Session** — first 8 chars of session UUID.
 - **Kitty** — kitty window ID. From `session_metadata` (namespace=kitty, key=window_id).
 

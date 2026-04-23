@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     total_output_tokens INTEGER,
     claude_code_version TEXT,
     git_worktree TEXT,
+    git_branch TEXT,
     exceeds_200k_tokens INTEGER,
     output_style TEXT,
     prev_cost_usd REAL,
@@ -106,6 +107,7 @@ for col_spec in \
   "total_output_tokens INTEGER" \
   "claude_code_version TEXT" \
   "git_worktree TEXT" \
+  "git_branch TEXT" \
   "exceeds_200k_tokens INTEGER" \
   "output_style TEXT" \
   "prev_cost_usd REAL" \
@@ -117,12 +119,6 @@ for col_spec in \
     sqlite3 "$KLAWDE_DIR/sessions.db" "ALTER TABLE sessions ADD COLUMN $col_spec;"
   fi
 done
-
-# Schema version stamp. Starts at 1; bump when introducing migration blocks
-# below. Fresh DBs get v1 from the CREATE block above (auto_vacuum is set at
-# creation time since the PRAGMA precedes any table — no VACUUM conversion
-# needed).
-sqlite3 "$KLAWDE_DIR/sessions.db" "PRAGMA user_version = 1;"
 
 # Rotate hook error log (keep last 500 lines).
 if [ -f "$KLAWDE_DIR/hook-errors.log" ]; then
