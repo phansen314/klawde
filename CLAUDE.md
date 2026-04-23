@@ -72,20 +72,28 @@ uv run python -m pytest                # tests (see note below on why `-m pytest
 uv run python -m pytest tests/test_db.py::test_needs_approval_sorts_first   # single test
 ```
 
-## Table columns
+## Table layout
 
-Column order: `● | Ctx | CWD | Branch | Duration | Idle | Model | Cost | Session | Kitty`
+Each session renders as a 2-row cell (`add_row(..., height=2)`). Six columns total: `● | Ctx | Location | Time | Model | Kitty`. Every emoji-prefixed cell uses VS16 on narrow-default glyphs (`⏱️`, `⚠️`) so row 1 and row 2 align column-for-column. Values are fixed-width padded — time values right-justified, text values left-justified.
 
-- **●** — status icon: green ● running, yellow ⏸ needs_approval. From `sessions.status`.
-- **Ctx** — context window usage bar + %. Color: green <70%, yellow 70–84%, red ≥85% with ⚠. From `sessions.context_percent`, rendered by `_ctx_bar`.
-- **CWD** — working directory, home-collapsed (`~/...`), left-ellipsis truncated to 30 chars. From `sessions.cwd`, rendered by `_fmt_cwd`.
-- **Branch** — git branch (or 7-char short sha when detached), left-ellipsis truncated to 20 chars. From `sessions.git_branch`, rendered by `_fmt_branch`. Populated on every statusline tick by a zero-fork pure-bash walk from `cwd` to the nearest `.git/HEAD` (regular repo or linked worktree).
-- **Duration** — time since session started. From `sessions.started_at`.
-- **Idle** — time since last update. From `sessions.updated_at`.
-- **Model** — model name with `claude-` prefix and date suffix stripped. From `sessions.model`.
-- **Cost** — total_cost_usd with burn-rate context via the summary row.
-- **Session** — first 8 chars of session UUID.
-- **Kitty** — kitty window ID. From `session_metadata` (namespace=kitty, key=window_id).
+| Column | Row 1 | Row 2 | Source |
+|---|---|---|---|
+| (status) | `●`/`⏸` | — | `sessions.status`, rendered by `_status_icon` |
+| Ctx | `🧠 NN%` (green <70, yellow 70–84, red ≥85) | `💰 $X.XX` | `context_percent`; `_ctx_bar` + `_fmt_cost` |
+| Location | `📁 cwd` (home-collapsed, left-ellipsis, 30 wide) | `🌿 branch` (same width) or blank | `cwd`, `git_branch`; `_fmt_cwd` / `_fmt_branch` |
+| Time | `⏱️ duration` (rjust 6) | `💤 idle` | `started_at`, `updated_at`; `_fmt_duration` / `_fmt_idle` |
+| Model | `🤖 model` (claude- prefix + date suffix stripped) | `🪪 session_id[:8]` | `sessions.model`, `session_id` |
+| Kitty | kitty window id (rjust 4) | — | `session_metadata` (namespace=kitty, key=window_id) |
+
+Account-level summary (5h/7d rate limits + burn rate) rides in the Header bar as `self.sub_title`, not in a table:
+
+```
+klawde · ⏳ 45% · 🔄 10:28PM · 📅 12% · 🔄 4/24 7:28PM · 🔥 $1.42/hr
+```
+
+`ENABLE_COMMAND_PALETTE = False` and `HeaderIcon { display: none }` suppress the palette entirely. `format_title()` is overridden to join title + sub_title with ` · ` instead of the default ` — `. Column headers are centered by passing `Text(label, justify="center")` to `add_column`.
+
+Branch detection lives in `metrics/statusline.sh` (hoisted above the fingerprint so changes trigger a fresh UPDATE): pure-bash walk from `cwd` looking for `.git/HEAD` (regular repo) or `.git` pointer file (linked worktree), falls back to 7-char short sha on detached HEAD. Zero forks.
 
 ## Key files
 
@@ -104,7 +112,7 @@ The single source of truth. All hooks write to `~/.klawde/sessions.db`; the TUI 
 bash metrics/setup.sh
 ```
 
-**Schema:** three tables — `sessions` (per-session state, ~25 columns including cost, tokens, rate limits, git worktree, Claude Code version), `session_metadata` (namespaced KV; kitty namespace written by `kitty_start.sh`), `events` (append-only audit log). WAL mode, `auto_vacuum=INCREMENTAL`, `synchronous=NORMAL`.
+**Schema:** three tables — `sessions` (per-session state, including cost, tokens, rate limits, git worktree + branch, Claude Code version), `session_metadata` (namespaced KV; kitty namespace written by `kitty_start.sh`), `events` (append-only audit log). WAL mode, `auto_vacuum=INCREMENTAL`, `synchronous=NORMAL`. Schema evolves in place via an idempotent `ALTER TABLE ADD COLUMN` loop in `setup.sh` — no migration version stamp, no schema version checks at runtime.
 
 **Key files:**
 - `metrics/setup.sh` — copies scripts to `~/.klawde/`, creates DB + schema, idempotent `ALTER TABLE ADD COLUMN` loop for in-place schema evolution
@@ -112,7 +120,7 @@ bash metrics/setup.sh
 - `metrics/session_start.sh` / `session_end.sh` / `notification.sh` / `post_tool_use.sh` — lifecycle hooks
 - `metrics/kitty_start.sh` — captures `KITTY_WINDOW_ID` / `KITTY_LISTEN_ON` into `session_metadata` on SessionStart. Runs after `session_start.sh` (which is blocking) to avoid FK races.
 - `metrics/statusline.sh` — per-tick UPDATE of live metrics + emoji-rich two-line output
-- `metrics/prune.sh` — retention: events >30d, stopped sessions >90d
+- `metrics/prune.sh` — retention (events >30d, stopped sessions >90d) + zombie reap (active sessions idle >4h → `stopped`). Runs at the end of `setup.sh` and fire-and-forget at TUI startup (`tui.py:_prune_async()`). The TUI query also filters `updated_at > now - 4h` so stale rows drop immediately even before prune catches up.
 - `metrics/test_data.sh` — seed 4 fake sessions for manual hook testing
 - `metrics/simulate_hook.sh` — pipe JSON to a named hook and inspect DB state
 
@@ -128,5 +136,5 @@ bash metrics/setup.sh
 - `INPUT=$(cat)` for stdin capture in hooks — do NOT use `$(</dev/stdin)`; Claude Code's invocation makes that read empty.
 - kitty remote control is assumed: `allow_remote_control yes` + `listen_on unix:/tmp/kitty-{kitty_pid}` in the user's kitty.conf. When this is missing, klawde surfaces the error via `self.notify(..., severity="error")` instead of crashing.
 - Session row `ON CONFLICT DO UPDATE` overwrites `cwd` and kitty metadata on resume while preserving `started_at`. Continuation semantics: same session, fresh location, Duration reflects total age.
-- Retention (`metrics/prune.sh`) handles stale cleanup; the TUI itself no longer prunes.
+- Retention (`metrics/prune.sh`) handles stale cleanup. The TUI spawns `prune.sh` fire-and-forget on startup so zombie-reap and row deletion run before the first `list_sessions()` call; no cron required.
 - Run tests with `uv run python -m pytest`, not `uv run pytest`. The latter resolves via PATH to the pyenv shim, bypassing the project venv and failing with `ModuleNotFoundError: klawde`.

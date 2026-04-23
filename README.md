@@ -1,13 +1,17 @@
 # klawde
 
-A [Textual](https://textual.textualize.io/) TUI for managing multiple Claude Code sessions in [kitty](https://sw.kovidgoyal.net/kitty/). Shows all live sessions with status, context usage, CWD, model, and duration. Press Enter to jump to that session's kitty window.
+A [Textual](https://textual.textualize.io/) TUI for managing multiple Claude Code sessions in [kitty](https://sw.kovidgoyal.net/kitty/). Shows every live session with status, context %, CWD + branch, duration + idle, model + session id, kitty window id, cost, and account-level rate limits. Press Enter to jump to that session's kitty window.
 
 ```
-● | Ctx        | CWD                | Duration | Model   | Session | Kitty
-──┼────────────┼────────────────────┼──────────┼─────────┼─────────┼──────
-⏸ | ████░ 62%  | ~/code/myapp       | 00:14:22 | sonnet  | a3f9b2c1| 7
-● | ██░░░ 31%  | ~/code/klawde      | 00:03:07 | opus    | 9d1e4f82| 4
+klawde · ⏳ 45%   ·   🔄 10:28PM   ·   📅 12%   ·   🔄 4/24 7:28PM   ·   🔥 $33.20/hr
+       Ctx                 Location                 Time              Model        Kitty
+ ●  🧠    30%  📁 ~/code/myapp                    ⏱️    14m  🤖   sonnet-4-6         7
+    💰  $4.80  🌿 main                            💤     2m  🪪     a3f9b2c1
+ ⏸  🧠    67%  📁 ~/code/klawde                   ⏱️  1h30m  🤖     opus-4-7         4
+    💰 $27.40  🌿 feat/branch-layout              💤    15m  🪪     9d1e4f82
 ```
+
+Each session is two rows: top line carries ctx/cwd/duration/model/kitty, bottom line carries cost/branch/idle/session-id. Rate limits and burn rate ride in the header title bar.
 
 ## Prerequisites
 
@@ -174,16 +178,33 @@ KLAWDE_DB=/tmp/klawde-test/sessions.db uv run klawde
 
 The single source of truth. `metrics/*.sh` hooks write to `~/.klawde/sessions.db`; the TUI reads from it read-only.
 
-**Captures:** session status, CWD, model, context %, cost (USD equivalent for subscription users), session/api duration, token totals, rate limits (5h/7d), lines added/removed, kitty window/socket, Claude Code version, output style, git worktree, and a full audit event log.
+**Captures:** session status, CWD, model, context %, cost (USD equivalent for subscription users), session/api duration, token totals, rate limits (5h/7d), lines added/removed, kitty window/socket, Claude Code version, output style, git worktree, git branch, and a full audit event log.
 
-**Schema:** three tables — `sessions` (~25 columns), `session_metadata` (namespaced key-value), `events` (append-only). WAL mode.
+**Schema:** three tables — `sessions` (per-session state), `session_metadata` (namespaced key-value), `events` (append-only). WAL mode. Schema evolves via an idempotent `ALTER TABLE ADD COLUMN` loop in `setup.sh`.
 
 **Key files:**
 - `metrics/setup.sh` — idempotent installer
 - `metrics/session_start.sh` / `session_end.sh` / `notification.sh` / `post_tool_use.sh` — lifecycle hooks
 - `metrics/kitty_start.sh` — captures kitty window state into `session_metadata`
 - `metrics/statusline.sh` — per-tick metrics UPDATE + emoji-rich output
-- `metrics/prune.sh` — retention (events >30d, stopped sessions >90d)
+- `metrics/prune.sh` — retention (events >30d, stopped sessions >90d) + zombie reap (active sessions idle >4h → `stopped`)
+
+### Retention
+
+`prune.sh` runs automatically in two places:
+
+1. At the end of `bash metrics/setup.sh` (install time).
+2. Fire-and-forget on every klawde TUI startup.
+
+For typical users that's enough — the DB is cleaned every time you open klawde. No cron or timer required. SQLite stays fast even with a year of un-pruned data at realistic session volumes.
+
+If you run klawde rarely but want bounded storage regardless, drop the one-liner into `crontab -e`:
+
+```cron
+0 3 * * * /bin/bash "$HOME/.klawde/prune.sh" >/dev/null 2>&1
+```
+
+Or a systemd user-timer if you prefer — `prune.sh` is idempotent and safe to fire arbitrarily often.
 
 ### Composing statuslines
 
